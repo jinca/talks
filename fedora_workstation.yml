@@ -1,0 +1,151 @@
+---
+- name: Post-Installation Setup for Fedora Workstation
+  hosts: localhost
+  connection: local
+  become: true
+
+  vars:
+    # Target desktop user (defaults to current sudo/login user)
+    desktop_user: "{{ ansible_env.SUDO_USER | default(ansible_user_id) }}"
+
+    # Core system tools, dev packages & shell utilities
+    system_packages:
+      - curl
+      - git
+      - vim
+      - zsh
+      - htop
+      - btop
+      - fastfetch
+      - @development-tools
+      - flatpak
+      - util-linux-user
+
+    # Multimedia codecs from RPM Fusion
+    multimedia_packages:
+      - ffmpeg
+      - gstreamer1-plugins-ugly
+      - gstreamer1-plugins-bad-freeworld
+      - vlc
+
+    # Desktop Flatpaks (installed at user or system level)
+    desktop_flatpaks:
+      - com.visualstudio.code
+      - com.spotify.Client
+      - com.discordapp.Discord
+      - org.mozilla.firefox
+
+  tasks:
+    # -------------------------------------------------------------------------
+    # 1. Host Validation
+    # -------------------------------------------------------------------------
+    - name: Ensure target OS is Fedora
+      ansible.builtin.assert:
+        that:
+          - ansible_facts['distribution'] == 'Fedora'
+        fail_msg: "This playbook is only intended for Fedora distributions."
+
+    # -------------------------------------------------------------------------
+    # 2. Package Manager Tuning & Repositories
+    # -------------------------------------------------------------------------
+    - name: Optimize DNF settings (parallel downloads & fastest mirror)
+      ansible.builtin.blockinfile:
+        path: /etc/dnf/dnf.conf
+        marker: "# {mark} ANSIBLE DNF TUNING"
+        block: |
+          max_parallel_downloads=10
+          fastestmirror=True
+
+    - name: Enable RPM Fusion Free and Nonfree repositories
+      ansible.builtin.dnf:
+        name:
+          - "https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-{{ ansible_distribution_major_version }}.noarch.rpm"
+          - "https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-{{ ansible_distribution_major_version }}.noarch.rpm"
+        state: present
+        disable_gpg_check: true
+
+    - name: Perform full system upgrade
+      ansible.builtin.dnf:
+        name: "*"
+        state: latest
+
+    # -------------------------------------------------------------------------
+    # 3. Base & Multimedia Packages
+    # -------------------------------------------------------------------------
+    - name: Install system, developer, and diagnostic packages
+      ansible.builtin.dnf:
+        name: "{{ system_packages }}"
+        state: present
+
+    - name: Install multimedia codecs and players
+      ansible.builtin.dnf:
+        name: "{{ multimedia_packages }}"
+        state: present
+
+    # -------------------------------------------------------------------------
+    # 4. Flatpak Ecosystem Setup
+    # -------------------------------------------------------------------------
+    - name: Add Flathub repository
+      community.general.flatpak_remote:
+        name: flathub
+        flatpakrepo_url: https://dl.flathub.org/repo/flathub.flatpakrepo
+        state: present
+        method: system
+
+    - name: Install workstation Flatpak applications
+      community.general.flatpak:
+        name: "{{ item }}"
+        state: present
+        method: system
+      loop: "{{ desktop_flatpaks }}"
+
+    # -------------------------------------------------------------------------
+    # 5. Services & System Daemons (systemd)
+    # -------------------------------------------------------------------------
+    - name: Ensure SSH server daemon is enabled and active
+      ansible.builtin.systemd:
+        name: sshd
+        state: started
+        enabled: true
+
+    - name: Ensure firewalld service is enabled and running
+      ansible.builtin.systemd:
+        name: firewalld
+        state: started
+        enabled: true
+
+    # -------------------------------------------------------------------------
+    # 6. GNOME Desktop Customization (Executed under desktop user context)
+    # -------------------------------------------------------------------------
+    - name: Apply GNOME user interface preferences via dconf
+      become: true
+      become_user: "{{ desktop_user }}"
+      community.general.dconf:
+        key: "{{ item.key }}"
+        value: "{{ item.value }}"
+        state: present
+      loop:
+        # Prefer Dark theme
+        - key: "/org/gnome/desktop/interface/color-scheme"
+          value: "'prefer-dark'"
+        # Show battery percentage in top status bar
+        - key: "/org/gnome/desktop/interface/show-battery-percentage"
+          value: "true"
+        # Include weekday in the top panel clock
+        - key: "/org/gnome/desktop/interface/clock-show-weekday"
+          value: "true"
+        # Enable minimize and maximize window control buttons
+        - key: "/org/gnome/desktop/wm/preferences/button-layout"
+          value: "'appmenu:minimize,maximize,close'"
+        # Tap-to-click on touchpads
+        - key: "/org/gnome/desktop/peripherals/touchpad/tap-to-click"
+          value: "true"
+
+Install Ansible and required collections on Fedora:
+===================================================
+sudo dnf install -y ansible
+ansible-galaxy collection install community.general
+
+Execute locally against the workstation:
+========================================
+ansible-playbook --ask-become-pass fedora_workstation.yml
